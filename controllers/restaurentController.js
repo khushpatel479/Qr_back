@@ -407,66 +407,51 @@ const deleteRestaurant = async (req, res) => {
 // @desc    PUBLIC — Customer scans QR, gets full menu
 // @access  Public (no token needed)
 // ─────────────────────────────────────────────────────────────────────────────
+// In your restaurant routes or controller
 const getPublicMenu = async (req, res) => {
   try {
-    const { slug } = req.params;
-
-    // find restaurant by slug
-    const restaurant = await Restaurant.findOne({ slug, isActive: true })
-      .select('-qrCode -owner -__v'); // dont send QR base64 to customer (heavy)
-
+    const restaurant = await Restaurant.findOne({ slug: req.params.slug });
     if (!restaurant) {
-      return res.status(404).json({
-        success: false,
-        message: 'Menu not found or restaurant is currently closed'
-      });
+      return res.status(404).json({ message: 'Restaurant not found' });
     }
 
-    // get all active categories sorted by order
-    const categories = await Category.find({
-      restaurant: restaurant._id,
-      isActive: true
-    }).sort({ order: 1 });
+    const categories = await Category.find({ restaurant: restaurant._id, isActive: true })
+      .sort({ order: 1 });
 
-    // get all available items
-    const items = await MenuItem.find({
-      restaurant:  restaurant._id,
-      isAvailable: true
-    }).sort({ order: 1 });
+    const items = await MenuItem.find({ restaurant: restaurant._id, isAvailable: true })
+      .select('-image.data') // Exclude binary data for performance
+      .sort({ order: 1 });
 
-    // group items under their category
-    const menu = categories.map(cat => ({
-      category: {
-        _id:         cat._id,
-        name:        cat.name,
-        description: cat.description,
-        image:       cat.image,
-      },
-      items: items.filter(
+    // 🔥 Add hasImage flag to each item
+    const itemsWithImageFlag = items.map(item => {
+      const itemObj = item.toObject();
+      return {
+        ...itemObj,
+        hasImage: !!(item.image && item.image.data && item.image.data.length > 0),
+      };
+    });
+
+    const grouped = categories.map(cat => ({
+      category: cat,
+      items: itemsWithImageFlag.filter(
         item => item.category.toString() === cat._id.toString()
-      )
-    })).filter(section => section.items.length > 0); // hide empty categories
+      ),
+    }));
 
-    res.status(200).json({
-      success: true,
+    res.json({
       restaurant: {
-        name:        restaurant.name,
+        name: restaurant.name,
+        logo: restaurant.logo,
+        cuisine: restaurant.cuisine,
+        address: restaurant.address,
+        phone: restaurant.phone,
         description: restaurant.description,
-        logo:        restaurant.logo,
-        address:     restaurant.address,
-        phone:       restaurant.phone,
-        cuisine:     restaurant.cuisine,
       },
-      menu,
-      totalItems: items.length,
+      menu: grouped,
     });
-
   } catch (error) {
-    console.error('GetPublicMenu error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Something went wrong. Please try again.'
-    });
+    console.error('Public menu error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 

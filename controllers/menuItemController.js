@@ -291,22 +291,22 @@ const getMenuItemImage = async (req, res) => {
   try {
     const item = await MenuItem.findById(req.params.id).select('image');
 
-    if (!item || !item.image || !item.image.data) {
-      return res.status(404).json({
-        success: false,
-        message: 'Image not found'
-      });
+    if (!item || !item.image || !item.image.data || item.image.data.length === 0) {
+      return res.status(404).json({ success: false, message: 'Image not found' });
     }
 
+    // 🔥 STRONG cache prevention
     res.set('Content-Type', item.image.contentType);
-    res.set('Cache-Control', 'public, max-age=31557600'); // Cache for 1 year
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('Surrogate-Control', 'no-store');
+    res.set('ETag', Date.now().toString()); // Unique ETag every time
+    
     res.send(item.image.data);
   } catch (error) {
     console.error('GetMenuItemImage error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Something went wrong. Please try again.'
-    });
+    res.status(500).json({ success: false, message: 'Something went wrong.' });
   }
 };
 
@@ -326,128 +326,71 @@ const updateMenuItem = (req, res) => {
 
     try {
       const {
-        name,
-        description,
-        price,
-        isVeg,
-        isBestseller,
-        categoryId,
-        removeImage,
+        name, description, price, isVeg, isBestseller,
+        categoryId, removeImage,
       } = req.body;
 
-      // ── Validations ──────────────────────────────────────────────────────────
+      // Validations...
       if (!name) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: { name: 'Item name is required' }
-        });
+        return res.status(400).json({ success: false, message: 'Validation failed', errors: { name: 'Item name is required' } });
       }
 
-      if (name.trim().length < 2) {
-        if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: { name: 'Item name must be at least 2 characters' }
-        });
-      }
-
-      if (!price && price !== 0) {
-        if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: { price: 'Price is required' }
-        });
-      }
-
-      if (isNaN(price) || Number(price) < 0) {
-        if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: { price: 'Price must be a valid positive number' }
-        });
-      }
-
-      if (description && description.trim().length > 300) {
-        if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: 'Validation failed',
-          errors: { description: 'Description cannot exceed 300 characters' }
-        });
-      }
-
-      // ── Find item ─────────────────────────────────────────────────────────────
       const item = await MenuItem.findById(req.params.id)
         .populate({ path: 'restaurant', select: 'owner' });
 
       if (!item) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(404).json({
-          success: false,
-          message: 'Item not found'
-        });
+        return res.status(404).json({ success: false, message: 'Item not found' });
       }
 
-      // ── Verify ownership ──────────────────────────────────────────────────────
       if (item.restaurant.owner.toString() !== req.userId.toString()) {
         if (req.file) fs.unlinkSync(req.file.path);
-        return res.status(403).json({
-          success: false,
-          message: 'Not authorized to update this item'
-        });
+        return res.status(403).json({ success: false, message: 'Not authorized' });
       }
 
-      // ── If moving to different category, verify new category ──────────────────
-      if (categoryId && categoryId !== item.category.toString()) {
-        const newCategory = await Category.findOne({
-          _id:        categoryId,
-          restaurant: item.restaurant._id,
-        });
+      // Update fields
+      item.name = name.trim();
+      item.description = description ? description.trim() : item.description;
+      item.price = Number(price);
 
-        if (!newCategory) {
-          if (req.file) fs.unlinkSync(req.file.path);
-          return res.status(404).json({
-            success: false,
-            message: 'New category not found in this restaurant'
-          });
-        }
-
-        item.category = categoryId;
-      }
-
-      // ── Update fields ─────────────────────────────────────────────────────────
-      item.name         = name.trim();
-      item.description  = description ? description.trim() : item.description;
-      item.price        = Number(price);
-      
-      // Handle image updates
-      if (removeImage === 'true' || removeImage === true) {
-        // Remove existing image
-        item.image = null;
+      // 🔥 FIXED: Handle image updates properly
+      if (removeImage === 'true' || removeImage === true || removeImage === '1') {
+        // Explicitly remove image
+        console.log('🗑️ Removing image for item:', item._id);
+        item.image = undefined; // Use undefined to remove the field completely
       } else if (req.file) {
-        // Read new image file and store in MongoDB
+        // New image uploaded
+        console.log('📸 New image uploaded:', req.file.originalname);
         const fileBuffer = fs.readFileSync(req.file.path);
         item.image = {
           data: fileBuffer,
           contentType: req.file.mimetype
         };
-        // Delete the temporary file
         fs.unlinkSync(req.file.path);
       }
-      // If neither removeImage nor new file, keep existing image
+      // If neither, keep existing image (don't modify item.image)
 
-      item.isVeg        = isVeg !== undefined ? isVeg : item.isVeg;
+      if (categoryId && categoryId !== item.category.toString()) {
+        const newCategory = await Category.findOne({
+          _id: categoryId,
+          restaurant: item.restaurant._id,
+        });
+        if (!newCategory) {
+          if (req.file) fs.unlinkSync(req.file.path);
+          return res.status(404).json({ success: false, message: 'Category not found' });
+        }
+        item.category = categoryId;
+      }
+
+      item.isVeg = isVeg !== undefined ? isVeg : item.isVeg;
       item.isBestseller = isBestseller !== undefined ? isBestseller : item.isBestseller;
 
       await item.save();
       await item.populate('category', 'name');
 
       const itemObj = item.toObject();
+      console.log('✅ Item updated. Has image:', !!itemObj.image, 'Has imageUrl:', !!itemObj.imageUrl);
 
       res.status(200).json({
         success: true,
@@ -456,7 +399,6 @@ const updateMenuItem = (req, res) => {
       });
 
     } catch (error) {
-      // Clean up uploaded file if error occurs
       if (req.file) {
         try { fs.unlinkSync(req.file.path); } catch (e) {}
       }
